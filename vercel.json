@@ -1,22 +1,24 @@
 {
+  "version": 2,
   "builds": [
     {
       "src": "api/index.py",
       "use": "@vercel/python"
     },
     {
-      "src": "package.json",
-      "use": "@vercel/next"
+      "src": "dashboard/package.json",
+      "use": "@vercel/next",
+      "config": { "workPath": "dashboard" }
     }
   ],
   "routes": [
     {
-      "src": "/api/index",
+      "src": "/api/(.*)",
       "dest": "/api/index.py"
     },
     {
       "src": "/(.*)",
-      "dest": "/dashboard"
+      "dest": "/dashboard/$1"
     }
   ]
 }
