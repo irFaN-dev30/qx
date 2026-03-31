@@ -1,7 +1,7 @@
-numpy>=1.25.0
-rich>=13.0.0
-# If quotexapi is available via pip, add it here; otherwise install it from your local copy or repo.
-# Example (uncomment if available):
-# quotexapi>=0.1.0
-# Optional dev/test tools
-pytest>=7.0.0
+playwright>=1.40.0
+websockets>=12.0
+asyncio-mqtt>=0.12.0
+pydantic>=2.0.0
+requests>=2.31.0
+pandas-ta
+firebase-admin

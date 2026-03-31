@@ -1,0 +1,13 @@
+# Ignore session files
+sessions/
+config.json
+session.json
+
+# Ignore pycache folder
+__pycache__/
+
+# Ignore log files
+*.log
+
+# Ignore environment files
+.env
