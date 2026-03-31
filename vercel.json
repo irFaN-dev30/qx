@@ -1,0 +1,14 @@
+{
+  "builds": [
+    {
+      "src": "functions/git-quotex-api-v2/improved_signal_generator_all_assets.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "functions/git-quotex-api-v2/improved_signal_generator_all_assets.py"
+    }
+  ]
+}
