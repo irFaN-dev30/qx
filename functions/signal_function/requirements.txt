@@ -1,5 +1,0 @@
-firebase-admin
-flask
-pandas
-pandas-ta
-websocket-client
