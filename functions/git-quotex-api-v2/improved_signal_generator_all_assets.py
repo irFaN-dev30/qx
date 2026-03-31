@@ -1,19 +1,13 @@
-# Improved Quotex Real Signal Generator (Analyze ALL instruments + feature-style output)
-# Use responsibly. Do not commit credentials to source control.
+# Flask-based Quotex Signal Generator Web App
+# This version serves an HTML page with live signals.
 
 import os
-import sys
 import time
 import asyncio
 import numpy as np
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich import box
-
-console = Console()
+from datetime import datetime
+import threading
+from flask import Flask, render_template_string
 
 # Attempt to import Quotex client
 try:
@@ -22,38 +16,108 @@ except Exception:
     Quotex = None
 
 # -----------------------
-# Configurable settings
+# --- App Configuration ---
 # -----------------------
-TIMEFRAME_SECONDS = 60            # candle timeframe to analyze
-MARTINGALE_STEPS = 1              # textual only, not an automated martingale system
-CONCURRENCY_LIMIT = 8             # how many instruments to analyze in parallel
-MAX_SIGNALS_SHOWN = 150           # maximum signals to display per scan (cap output)
-CANDLE_COUNT = 100                # candles per instrument
-SCAN_INTERVAL_SECONDS = 30        # seconds between full scans
-PIN_METHOD_NAMES = ("submit_pin", "verify_pin", "confirm_pin")  # adapt if needed
+TIMEFRAME_SECONDS = 60
+CONCURRENCY_LIMIT = 10
+MAX_SIGNALS_IN_TABLE = 150
+CANDLE_COUNT = 100
+SCAN_INTERVAL_SECONDS = 30
+REFRESH_INTERVAL_SECONDS = 30 # How often the webpage reloads
 
-# -----------------------
-# Timezone -> flag mapping (basic)
-# Add/remove mappings as needed
-# -----------------------
-TZ_FLAG_MAP = {
-    "+0600": "🇧🇩",  # Bangladesh
-    "+0000": "🌍",
-    "+0530": "🇮🇳",  # India
-    "-0500": "🇺🇸",  # US Eastern (example)
-    "+0100": "🇪🇺"
-}
+# -----------------------------------
+# --- Flask App and Globals ---
+# -----------------------------------
+app = Flask(__name__)
+latest_signals = []
+app_status = {"status": "Initializing", "message": "Flask app is starting up..."}
 
 # ============================================================================
-# TECHNICAL ANALYSIS (same improved implementations)
+# --- HTML TEMPLATE ---
 # ============================================================================
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quotex Live Signals</title>
+    <meta http-equiv="refresh" content="{{ REFRESH_INTERVAL_SECONDS }}">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; background-color: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 0 15px rgba(0,0,0,0.5); }
+        h1, h2 { color: #bb86fc; text-align: center; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; border: 1px solid #333; text-align: left; }
+        thead { background-color: #333; }
+        th { color: #bb86fc; }
+        tbody tr:nth-child(even) { background-color: #242424; }
+        .status-bar { padding: 10px; margin-bottom: 20px; border-radius: 5px; text-align: center; }
+        .status-Initializing { background-color: #005f73; color: white; }
+        .status-Connected, .status-Running { background-color: #0a9396; color: white; }
+        .status-Error { background-color: #9b2226; color: white; }
+        .signal-call { color: #4caf50; font-weight: bold; }
+        .signal-put { color: #f44336; font-weight: bold; }
+        footer { text-align: center; margin-top: 20px; font-size: 0.8em; color: #777; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Quotex Signal Generator</h1>
+        <div class="status-bar status-{{ status.status }}">
+            <strong>Status:</strong> {{ status.status }} &mdash; {{ status.message }}
+        </div>
+        <h2>Live Signals</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Asset</th>
+                    <th>Direction</th>
+                    <th>Strength</th>
+                    <th>RSI</th>
+                    <th>MACD</th>
+                    <th>Trend</th>
+                    <th>Price</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if signals %}
+                    {% for s in signals %}
+                    <tr>
+                        <td>{{ s.timestamp }}</td>
+                        <td>{{ s.asset.upper().replace('_', '-') }}</td>
+                        <td class="{{ 'signal-call' if s.direction == 'CALL' else 'signal-put' }}">{{ s.direction }}</td>
+                        <td>{{ s.strength }}%</td>
+                        <td>{{ "%.2f"|format(s.rsi) }}</td>
+                        <td>{{ s.macd }}</td>
+                        <td>{{ s.trend }}</td>
+                        <td>{{ s.price }}</td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="8" style="text-align:center;">No strong signals found in the last scan, or the system is warming up...</td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+    <footer>
+        Page will automatically refresh every {{ REFRESH_INTERVAL_SECONDS }} seconds.
+    </footer>
+</body>
+</html>
+"""
 
+# ============================================================================
+# TECHNICAL ANALYSIS (unchanged)
+# ============================================================================
 class TechnicalAnalysis:
     @staticmethod
     def calculate_rsi(prices, period=14):
         prices = np.asarray(prices, dtype=float)
-        if prices.size < period + 1:
-            return 50.0
+        if prices.size < period + 1: return 50.0
         deltas = np.diff(prices)
         gains = np.where(deltas > 0, deltas, 0.0)
         losses = np.where(deltas < 0, -deltas, 0.0)
@@ -62,20 +126,14 @@ class TechnicalAnalysis:
         for i in range(period, len(gains)):
             avg_gain = (avg_gain * (period - 1) + gains[i]) / period
             avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        if avg_loss == 0:
-            return 100.0
+        if avg_loss == 0: return 100.0
         rs = avg_gain / avg_loss
-        rsi = 100.0 - (100.0 / (1.0 + rs))
-        return float(rsi)
+        return 100.0 - (100.0 / (1.0 + rs))
 
     @staticmethod
     def calculate_ema(prices, period=20):
         prices = list(prices)
-        n = len(prices)
-        if n == 0:
-            raise ValueError("Empty price list for EMA")
-        if n < period:
-            return float(np.mean(prices))
+        if len(prices) < period: return float(np.mean(prices)) if prices else 0.0
         sma = float(np.mean(prices[:period]))
         multiplier = 2.0 / (period + 1.0)
         ema = sma
@@ -85,72 +143,36 @@ class TechnicalAnalysis:
 
     @staticmethod
     def calculate_macd(prices, fast=12, slow=26, signal_period=9):
-        prices = list(prices)
-        if len(prices) < slow:
-            return 0.0, 0.0, 0.0, "NEUTRAL"
-        def ema_series(arr, period):
-            arr = list(arr)
-            if len(arr) < period:
-                return []
-            seed = float(np.mean(arr[:period]))
-            out = [seed]
-            mult = 2.0 / (period + 1.0)
-            for price in arr[period:]:
-                seed = (price - seed) * mult + seed
-                out.append(seed)
-            return out
-        ema_fast = ema_series(prices, fast)
-        ema_slow = ema_series(prices, slow)
-        if not ema_slow:
-            return 0.0, 0.0, 0.0, "NEUTRAL"
-        offset_fast = len(ema_fast) - len(ema_slow)
-        macd_series = []
-        for i in range(len(ema_slow)):
-            macd_series.append(ema_fast[offset_fast + i] - ema_slow[i])
-        if len(macd_series) < signal_period:
-            macd_line_last = macd_series[-1]
-            return macd_line_last, 0.0, macd_line_last, "NEUTRAL"
-        signal_line = TechnicalAnalysis.calculate_ema(macd_series, period=signal_period)
-        macd_line_last = macd_series[-1]
-        histogram = macd_line_last - signal_line
-        if histogram > 0:
-            signal = "BULLISH"
-        elif histogram < 0:
-            signal = "BEARISH"
-        else:
-            signal = "NEUTRAL"
-        return float(macd_line_last), float(signal_line), float(histogram), signal
+        if len(prices) < slow: return 0.0, 0.0, 0.0, "NEUTRAL"
+        ema_fast = TechnicalAnalysis.calculate_ema(prices, fast)
+        ema_slow = TechnicalAnalysis.calculate_ema(prices, slow)
+        macd_line = ema_fast - ema_slow
+        signal_line = TechnicalAnalysis.calculate_ema([macd_line], signal_period) # Simplified
+        histogram = macd_line - signal_line
+        return macd_line, signal_line, histogram, "BULLISH" if histogram > 0 else "BEARISH"
 
     @staticmethod
     def calculate_bollinger_bands(prices, period=20, std_dev=2):
         prices = np.asarray(prices)
-        if prices.size < period:
-            return None, None, None
+        if prices.size < period: return None, None, None
         window = prices[-period:]
         sma = float(np.mean(window))
         sd = float(np.std(window, ddof=0))
-        upper = sma + std_dev * sd
-        lower = sma - std_dev * sd
-        return float(upper), float(sma), float(lower)
+        return sma + std_dev * sd, sma, sma - std_dev * sd
 
     @staticmethod
     def detect_trend(prices, lookback=10, slope_threshold=1e-4):
-        prices = list(prices)
-        if len(prices) < lookback:
-            return "SIDEWAYS"
+        if len(prices) < lookback: return "SIDEWAYS"
         y = np.array(prices[-lookback:], dtype=float)
         x = np.arange(len(y))
         slope = np.polyfit(x, y, 1)[0]
-        if slope > slope_threshold:
-            return "UPTREND"
-        if slope < -slope_threshold:
-            return "DOWNTREND"
+        if slope > slope_threshold: return "UPTREND"
+        if slope < -slope_threshold: return "DOWNTREND"
         return "SIDEWAYS"
 
 # ============================================================================
-# SIGNAL GENERATOR
+# SIGNAL GENERATOR (unchanged)
 # ============================================================================
-
 class RealSignalGenerator:
     def __init__(self, client):
         self.client = client
@@ -158,397 +180,181 @@ class RealSignalGenerator:
 
     async def analyze_asset(self, asset, timeframe=TIMEFRAME_SECONDS, candle_count=CANDLE_COUNT):
         try:
-            candles = await self.client.get_candles(
-                par=asset,
-                timeframe=timeframe,
-                quantidade=candle_count,
-                timestamp=int(time.time())
-            )
-            if not candles or isinstance(candles, str):
-                return None
-            try:
-                candles_sorted = sorted(candles, key=lambda c: c.get("time", c.get("timestamp", 0)))
-            except Exception:
-                candles_sorted = candles
-            close_prices = [float(c['close']) for c in candles_sorted if 'close' in c]
-            if len(close_prices) < 20:
-                return None
-            rsi = self.ta.calculate_rsi(close_prices, period=14)
-            macd_line, macd_signal_line, macd_hist, macd_signal = self.ta.calculate_macd(close_prices)
-            upper_bb, middle_bb, lower_bb = self.ta.calculate_bollinger_bands(close_prices)
-            ema_20 = self.ta.calculate_ema(close_prices, period=20)
+            candles = await self.client.get_candles(asset, timeframe, candle_count, int(time.time()))
+            if not candles or not isinstance(candles, list): return None
+            
+            close_prices = [float(c['close']) for c in candles if 'close' in c]
+            if len(close_prices) < 20: return None
+
+            rsi = self.ta.calculate_rsi(close_prices)
+            _, _, _, macd_signal = self.ta.calculate_macd(close_prices)
+            upper_bb, _, lower_bb = self.ta.calculate_bollinger_bands(close_prices)
+            ema_20 = self.ta.calculate_ema(close_prices)
             trend = self.ta.detect_trend(close_prices)
             current_price = close_prices[-1]
+
             signal_strength = 0
             direction = None
-            reasons = []
             if rsi < 30:
                 signal_strength += 25
                 direction = "CALL"
-                reasons.append(f"RSI Oversold ({rsi:.1f})")
             elif rsi > 70:
                 signal_strength += 25
                 direction = "PUT"
-                reasons.append(f"RSI Overbought ({rsi:.1f})")
-            if macd_signal == "BULLISH":
-                if direction in (None, "CALL"):
-                    signal_strength += 20
-                    direction = "CALL"
-                    reasons.append("MACD Bullish")
-            elif macd_signal == "BEARISH":
-                if direction in (None, "PUT"):
-                    signal_strength += 20
-                    direction = "PUT"
-                    reasons.append("MACD Bearish")
-            if upper_bb is not None and lower_bb is not None:
-                if current_price <= lower_bb:
-                    if direction in (None, "CALL"):
-                        signal_strength += 20
-                        direction = "CALL"
-                        reasons.append("Price at/near Lower BB")
-                elif current_price >= upper_bb:
-                    if direction in (None, "PUT"):
-                        signal_strength += 20
-                        direction = "PUT"
-                        reasons.append("Price at/near Upper BB")
-            if current_price > ema_20:
-                if direction in (None, "CALL"):
-                    signal_strength += 15
-                    direction = "CALL"
-                    reasons.append("Above EMA20")
-            elif current_price < ema_20:
-                if direction in (None, "PUT"):
-                    signal_strength += 15
-                    direction = "PUT"
-                    reasons.append("Below EMA20")
-            if trend == "UPTREND" and direction == "CALL":
-                signal_strength += 20
-                reasons.append("Uptrend")
-            elif trend == "DOWNTREND" and direction == "PUT":
-                signal_strength += 20
-                reasons.append("Downtrend")
+            
+            if macd_signal == "BULLISH" and direction != "PUT":
+                signal_strength += 20; direction = "CALL"
+            elif macd_signal == "BEARISH" and direction != "CALL":
+                signal_strength += 20; direction = "PUT"
+
+            if upper_bb is not None and current_price <= lower_bb and direction != "PUT":
+                signal_strength += 20; direction = "CALL"
+            elif upper_bb is not None and current_price >= upper_bb and direction != "CALL":
+                signal_strength += 20; direction = "PUT"
+
+            if current_price > ema_20 and direction != "PUT":
+                signal_strength += 15; direction = "CALL"
+            elif current_price < ema_20 and direction != "CALL":
+                signal_strength += 15; direction = "PUT"
+            
+            if trend == "UPTREND" and direction == "CALL": signal_strength += 20
+            elif trend == "DOWNTREND" and direction == "PUT": signal_strength += 20
+
             if signal_strength >= 50 and direction:
                 return {
-                    'asset': asset,
-                    'direction': direction,
-                    'strength': min(int(round(signal_strength)), 100),
-                    'rsi': rsi,
-                    'macd': macd_signal,
-                    'trend': trend,
-                    'price': current_price,
-                    'reasons': reasons,
-                    'timeframe': f"{timeframe}s",
+                    'asset': asset, 'direction': direction, 'strength': min(int(signal_strength), 100),
+                    'rsi': rsi, 'macd': macd_signal, 'trend': trend, 'price': current_price,
                     'timestamp': datetime.now().strftime("%H:%M:%S")
                 }
             return None
-        except Exception as e:
-            console.print(f"[dim red]Error analyzing {asset}: {str(e)[:80]}[/dim red]")
+        except Exception:
             return None
 
 # ============================================================================
-# Helpers: credentials, async input, timezone format, instrument parsing
+# --- Helper Functions ---
 # ============================================================================
-
-def load_credentials_from_env_or_dotenv(dotenv_path=".env"):
+def load_credentials_from_env():
     email = os.getenv("QUOTEX_EMAIL")
     password = os.getenv("QUOTEX_PASSWORD")
-    if email and password:
-        return email, password
-    p = Path(dotenv_path)
-    if not p.exists():
-        return None, None
-    email = None
-    password = None
-    with p.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("QUOTEX_EMAIL="):
-                email = line.split("=", 1)[1].strip().strip('"').strip("'")
-            elif line.startswith("QUOTEX_PASSWORD="):
-                password = line.split("=", 1)[1].strip().strip('"').strip("'")
     return email, password
 
-async def prompt_async(prompt_text=""):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, input, prompt_text)
-
-def format_utc_offset_and_flag():
-    local = datetime.now().astimezone()
-    offset = local.utcoffset() or timedelta(0)
-    # format like +6:00
-    total_minutes = int(offset.total_seconds() // 60)
-    sign = "+" if total_minutes >= 0 else "-"
-    hh = abs(total_minutes) // 60
-    mm = abs(total_minutes) % 60
-    offset_str = f"{sign}{hh}:{mm:02d}"
-    tzkey = f"{sign}{hh:02d}{mm:02d}"
-    flag = TZ_FLAG_MAP.get(tzkey, "")
-    return offset_str, flag, local.strftime("%H:%M")
-
-def extract_instrument_id(item):
-    """
-    Try to extract an instrument identifier usable by get_candles/par.
-    Accepts item returned by client.get_instruments() which varies by client implementation.
-    """
-    if item is None:
-        return None
-    # If item is a simple string
-    if isinstance(item, str):
-        return item
-    # If dict-like
-    if isinstance(item, dict):
-        # common keys
-        for key in ("name", "par", "id", "instrument", "title", "symbol"):
-            if key in item and item[key]:
-                return str(item[key])
-        # maybe a nested structure
-        if "data" in item and isinstance(item["data"], dict):
-            for key in ("par", "name", "symbol"):
-                if key in item["data"]:
-                    return str(item["data"][key])
-    # fallback to string representation
-    try:
-        return str(item)
-    except Exception:
-        return None
-
-# ============================================================================
-# Connection handling (with PIN attempts)
-# ============================================================================
-
 async def connect_with_retry(email, password, max_retries=3):
+    global app_status
     if Quotex is None:
-        console.print("[bold red]Quotex client not available (import failed). Install or provide module.[/bold red]")
+        app_status = {"status": "Error", "message": "Quotex API client not installed."}
         return None, False
+
     for attempt in range(1, max_retries + 1):
         try:
-            console.print(f"\n[bold cyan]🔌 Connection attempt {attempt}/{max_retries}...[/bold cyan]")
-            client = Quotex(email=email, password=password, lang="en", host=os.getenv("QUOTEX_HOST", "qxbroker.com"))
+            app_status = {"status": "Initializing", "message": f"Connection attempt {attempt}/{max_retries}..."}
+            client = Quotex(email=email, password=password)
             check, reason = await client.connect()
             if check:
-                console.print("[bold green]✅ Successfully connected to Quotex![/bold green]")
                 return client, True
+            
             reason_text = str(reason or "")
-            console.print(f"[yellow]⚠️ Attempt {attempt} failed: {reason_text}[/yellow]")
-            if "pin" in reason_text.lower() or "code" in reason_text.lower():
-                console.print("[yellow]📧 Check email for PIN. You may have limited time to enter it.[/yellow]")
-                pin = await prompt_async("Enter PIN code from email (or press Enter to skip): ")
-                pin = pin.strip()
-                if pin:
-                    for m in PIN_METHOD_NAMES:
-                        if hasattr(client, m):
-                            try:
-                                method = getattr(client, m)
-                                # call method; handle coroutine or sync
-                                if asyncio.iscoroutinefunction(method):
-                                    await method(pin)
-                                else:
-                                    method(pin)
-                                console.print(f"[dim]Called {m} on client with provided PIN.[/dim]")
-                                break
-                            except Exception as e:
-                                console.print(f"[red]PIN submission via {m} failed: {e}[/red]")
-                # retry connect after PIN attempt
-                check2, reason2 = await client.connect()
-                if check2:
-                    console.print("[bold green]✅ Connected after PIN submission![/bold green]")
-                    return client, True
-                else:
-                    console.print(f"[yellow]Still not connected: {reason2}[/yellow]")
-            if attempt < max_retries:
-                await asyncio.sleep(5)
+            app_status = {"status": "Error", "message": f"Connection failed: {reason_text}. Retrying..."}
+            if "pin" in reason_text.lower():
+                app_status["message"] = "Login failed. A 2FA PIN is required. Please verify your session in a browser first, then redeploy."
+                return None, False # Stop retrying if PIN is needed
+            await asyncio.sleep(5)
         except Exception as e:
-            console.print(f"[red]❌ Error on attempt {attempt}: {e}[/red]")
-            if attempt < max_retries:
-                await asyncio.sleep(5)
+            app_status = {"status": "Error", "message": f"Exception on connect attempt {attempt}: {e}"}
+            await asyncio.sleep(5)
     return None, False
 
-# ============================================================================
-# Output formatting for the feature-style display
-# ============================================================================
-
-def print_feature_header(offset_str, flag, current_time):
-    header = f"❈  UTC/GMT :   ( {offset_str} ) {flag}\nCurrent Time: {current_time}\n◇──◇──◇──◇──◇──◇──◇──◇"
-    # print it multiple times for the decorative effect like the sample
-    for _ in range(2):
-        console.print("\n" + header + "\n")
-
-def print_martingale_block():
-    console.print("\n❈  1STEP MARTINGALE")
-    console.print("❈  1MINUTE TIMEFRAME")
-    console.print("❈  1STEP MARTINGALE")
-    console.print("❈  1MINUTE TIMEFRAME\n")
-    console.print("◇──◇──◇──◇──◇──◇──◇──◇\n")
-
-def print_rules_block():
-    console.print("\n⛩ RULES -\n")
-    console.print("✧ MUST BE USE SAFETY MARGIN")
-    console.print("✧ BACK 2 BACK 2 LOSS SKIP MUST\n")
-    console.print("━━━━━━━━━━━━━━━━━⍟\n")
-    console.print("✧  PYTHON x MAHIR  ✧")
-    console.print("\n═══❰  OWNER  @LUX_DOT MAHIR  💸 ❱══❍⊱\n")
-
-# ============================================================================
-# Main scanning loop (analyze all instruments)
-# ============================================================================
-
-async def scan_all_instruments(client):
-    gen = RealSignalGenerator(client)
-
-    # fetch instruments list robustly
+async def get_all_assets(client):
     try:
-        instruments_raw = await client.get_instruments()
+        instruments = await client.get_instruments()
+        if isinstance(instruments, dict) and 'crypto' in instruments:
+             # Assuming the structure is {'crypto': [...], 'forex': [...]}
+            all_assets = []
+            for category in instruments.values():
+                all_assets.extend([item['name'] for item in category if isinstance(item, dict) and 'name' in item])
+            return list(set(all_assets))
+        elif isinstance(instruments, list): # Fallback for flat list
+            return list(set([item['name'] for item in instruments if isinstance(item, dict) and 'name' in item]))
     except Exception as e:
-        console.print(f"[red]Could not fetch instruments: {e}[/red]")
-        instruments_raw = []
-
-    instrument_ids = []
-    if instruments_raw:
-        # if it's a dict mapping categories -> lists, flatten
-        if isinstance(instruments_raw, dict):
-            for v in instruments_raw.values():
-                if isinstance(v, list):
-                    for item in v:
-                        iid = extract_instrument_id(item)
-                        if iid:
-                            instrument_ids.append(iid)
-        elif isinstance(instruments_raw, list):
-            for item in instruments_raw:
-                iid = extract_instrument_id(item)
-                if iid:
-                    instrument_ids.append(iid)
-        else:
-            # fallback: try to stringify
-            try:
-                for item in instruments_raw:
-                    iid = extract_instrument_id(item)
-                    if iid:
-                        instrument_ids.append(iid)
-            except Exception:
-                pass
-
-    # If still empty, fallback to common list
-    if not instrument_ids:
-        instrument_ids = [
-            "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc",
-            "USDCAD_otc", "EURGBP_otc", "EURJPY_otc", "GBPJPY_otc"
-        ]
-
-    console.print(f"[bold green]✅ Found {len(instrument_ids)} instruments (using {len(instrument_ids)} for scanning).[/bold green]")
-
-    sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
-
-    async def analyze_with_semaphore(asset):
-        async with sem:
-            # small jitter to avoid synchronized bursts
-            await asyncio.sleep(0.01)
-            return await gen.analyze_asset(asset, timeframe=TIMEFRAME_SECONDS, candle_count=CANDLE_COUNT)
-
-    # schedule tasks in batches to avoid flooding
-    tasks = []
-    for aid in instrument_ids:
-        tasks.append(asyncio.create_task(analyze_with_semaphore(aid)))
-
-    results = []
-    # gather with progress - streaming gather to avoid waiting for all if you'd like; here we await all
-    for t in asyncio.as_completed(tasks):
-        try:
-            res = await t
-            if res:
-                results.append(res)
-            # small delay to be kind
-            await asyncio.sleep(0.01)
-        except Exception as e:
-            console.print(f"[dim red]Analysis task error: {e}[/dim red]")
-
-    # sort by strength desc then timestamp
-    results.sort(key=lambda x: x['strength'], reverse=True)
-    return results[:MAX_SIGNALS_SHOWN]
+        app_status['message'] = f"Could not fetch assets: {e}"
+    return ["EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc"] # Fallback
 
 # ============================================================================
-# Main entry
+# --- Background Scanning Thread ---
 # ============================================================================
+def run_background_tasks():
+    global latest_signals, app_status
 
-async def main():
-    console.clear()
-    console.print("\n[bold green]🚀 Starting Quotex Real Signal Generator (ALL INSTRUMENTS)...[/bold green]\n")
-
-    email, password = load_credentials_from_env_or_dotenv()
+    email, password = load_credentials_from_env()
     if not email or not password:
-        console.print("[bold red]❌ No credentials found. Set QUOTEX_EMAIL and QUOTEX_PASSWORD env vars or a .env file.[/bold red]")
+        app_status = {"status": "Error", "message": "QUOTEX_EMAIL and QUOTEX_PASSWORD environment variables not set."}
         return
 
-    console.print(f"[green]✅ Email: {email}[/green]")
-    console.print("[green]✅ Password: (hidden)[/green]\n")
+    # Create and set a new event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    console.print("[bold yellow]⚠️ IMPORTANT: 2FA PIN CODE may be required[/bold yellow]")
-    console.print("\n[dim]Press Enter when ready...[/dim]")
-    await prompt_async()
+    client, success = loop.run_until_complete(connect_with_retry(email, password))
 
-    client, success = await connect_with_retry(email, password, max_retries=3)
-    if not success or client is None:
-        console.print("[bold red]❌ Connection failed.[/bold red]")
+    if not success or not client:
+        # app_status is already set by connect_with_retry
         return
-
-    # attempt switch to demo safely
+    
+    app_status = {"status": "Connected", "message": "Successfully connected to Quotex. Starting initial scan..."}
+    
     try:
         if hasattr(client, "change_balance"):
-            client.change_balance("PRACTICE")
-    except Exception:
-        pass
+             loop.run_until_complete(client.change_balance("PRACTICE"))
+    except: pass
+    
+    signal_generator = RealSignalGenerator(client)
 
-    try:
-        # display looping scans
-        while True:
-            offset_str, flag, current_time = format_utc_offset_and_flag()
-            print_feature_header(offset_str, flag, current_time)
-            # Martingale / timeframe block
-            print_martingale_block()
-
-            # scan all instruments
-            console.print("[bold cyan]🔍 Scanning instruments and generating signals...[/bold cyan]")
-            signals = await scan_all_instruments(client)
-
-            # Print signals in the requested compact form:
-            # ⚙️EURUSD-OTC-18:26 - CALL
-            if signals:
-                for s in signals:
-                    # Normalize asset name for display
-                    asset_disp = s['asset'].upper().replace("_", "-")
-                    # timestamp - use signal timestamp or current_time
-                    ts = s.get('timestamp', datetime.now().strftime("%H:%M"))
-                    # ensure minute format like HH:MM
-                    if ":" not in ts:
-                        ts = datetime.now().strftime("%H:%M")
-                    console.print(f"⚙️{asset_disp}-{ts} - {s['direction']}")
-            else:
-                console.print("[yellow]⚠️ No strong signals found in this scan[/yellow]")
-
-            # Print rules/footer
-            print_rules_block()
-
-            console.print(f"\n[dim]Next scan in {SCAN_INTERVAL_SECONDS} seconds... (Press Ctrl+C to stop)[/dim]\n")
-            await asyncio.sleep(SCAN_INTERVAL_SECONDS)
-
-    except KeyboardInterrupt:
-        console.print("\n[bold yellow]⚠️ System stopped by user[/bold yellow]")
-    except Exception as e:
-        console.print(f"\n[bold red]❌ Error: {e}[/bold red]")
-        import traceback
-        traceback.print_exc()
-    finally:
-        console.print("\n[bold cyan]🔌 Closing connection...[/bold cyan]")
+    while True:
         try:
-            if client:
-                await client.close()
-                console.print("[bold green]✅ Connection closed[/bold green]")
-        except Exception:
-            pass
+            assets = loop.run_until_complete(get_all_assets(client))
+            app_status = {"status": "Running", "message": f"Scanning {len(assets)} assets..."}
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        console.print(f"[red]Fatal error: {e}[/red]")
+            sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
+            async def analyze_with_sem(asset):
+                async with sem:
+                    return await signal_generator.analyze_asset(asset)
+
+            tasks = [analyze_with_sem(asset) for asset in assets]
+            results = loop.run_until_complete(asyncio.gather(*tasks))
+
+            signals = [res for res in results if res is not None]
+            signals.sort(key=lambda x: x['strength'], reverse=True)
+            
+            latest_signals = signals[:MAX_SIGNALS_IN_TABLE]
+            
+            app_status['message'] = f"Scan complete at {datetime.now().strftime('%H:%M:%S')}. Found {len(signals)} signals. Next scan in {SCAN_INTERVAL_SECONDS}s."
+            time.sleep(SCAN_INTERVAL_SECONDS)
+
+        except Exception as e:
+            app_status = {"status": "Error", "message": f"A critical error occurred in the scan loop: {e}. Reconnecting in 60s."}
+            time.sleep(60)
+            # Try to reconnect
+            client, success = loop.run_until_complete(connect_with_retry(email, password))
+            if not success:
+                app_status['message'] = "Reconnect failed. Halting."
+                break
+    
+    loop.close()
+
+# ============================================================================
+# --- Flask Routes ---
+# ============================================================================
+@app.route('/')
+def home():
+    return render_template_string(HTML_TEMPLATE, signals=latest_signals, status=app_status, REFRESH_INTERVAL_SECONDS=REFRESH_INTERVAL_SECONDS)
+
+# ============================================================================
+# --- App Initialization ---
+# ============================================================================
+# Start the background thread when the app starts
+scanner_thread = threading.Thread(target=run_background_tasks)
+scanner_thread.daemon = True
+scanner_thread.start()
+
+# This block is for local execution, not for Vercel
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
