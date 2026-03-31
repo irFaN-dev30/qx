@@ -1,0 +1,100 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #050505;
+  color: #c8ffee;
+  height: 100vh;
+}
+
+.page-shell {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.5rem;
+}
+
+.terminal-card {
+  max-width: 780px;
+  width: min(100%, 780px);
+  border-radius: 18px;
+  border: 1px solid rgba(23, 255, 143, 0.3);
+  background: linear-gradient(145deg, #070707cc, #10101bdd);
+  padding: 1.4rem;
+  box-shadow: 0 0 25px rgba(106, 250, 199, 0.11);
+}
+
+.heading {
+  font-size: 1.9rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #9afec8;
+}
+
+.status-badge {
+  margin: 1rem 0;
+  padding: 0.8rem 1.2rem;
+  border-radius: 999px;
+  font-size: 1.35rem;
+  font-weight: 800;
+  text-align: center;
+  color: #0b0b0e;
+  background: #111111;
+}
+
+.status-badge.buy { background: linear-gradient(90deg, #073, #0f9); color: #050505; }
+.status-badge.sell { background: linear-gradient(90deg, #d00, #e66); color: #050505; }
+.status-badge.scanning { background: linear-gradient(90deg, #777, #999); color: #fff; }
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(100px, 1fr));
+  gap: 1rem;
+}
+
+.metric {
+  background: rgba(20, 20, 20, 0.9);
+  border-radius: 12px;
+  padding: 0.8rem;
+  border: 1px solid rgba(0, 255, 173, 0.1);
+}
+
+.metric span { font-size: 0.72rem; color: #b8f5d5; }
+.metric strong { font-size: 1.1rem; display: block; margin-top: 0.25rem; color: #e1f5ff; }
+
+.error {
+  margin-top: 1rem;
+  color: #ff7a8f;
+  font-weight: 700;
+}
+
+.hint {
+  margin-top: 1.2rem;
+  font-size: 0.8rem;
+  color: #9bb7b4;
+}
+
+.futuristic-grid {
+  max-width: 780px;
+  width: min(100%, 780px);
+  padding: 0.9rem;
+  border-radius: 14px;
+  border: 1px solid rgba(65, 225, 230, 0.15);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+pre {
+  margin: 0;
+  color: #7effd4;
+  font-size: 0.78rem;
+  overflow: auto;
+}
