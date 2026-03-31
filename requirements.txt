@@ -1,4 +1,4 @@
 Flask==2.2.2
 numpy==1.24.2
-quotexapi==1.2.9
 gunicorn==20.1.0
+git+https://github.com/bogdanoo/quotexapi.git@1.2.9
