@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow public read access to signals, but only allow server-side writes.
+    match /signals/{signalId} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}
