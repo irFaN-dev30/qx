@@ -65,9 +65,9 @@ class ApiSignalGenerator:
 
     async def analyze_asset(self, asset, timeframe=60, candle_count=100):
         try:
-            # দ্রষ্টব্য: আপনার ক্লায়েন্টে get_candles প্যারামিটারগুলো ভিন্ন হতে পারে।
-            # আমি 'par', 'timeframe', 'quantidade' এর পরিবর্তে 'asset', 'interval', 'count' ব্যবহার করছি।
-            candles = await self.client.get_candles(asset=asset, interval=timeframe, count=candle_count, end_time=int(time.time()))
+            # *** সংশোধন: এখানে সঠিক প্যারামিটার (par, timeframe, quantidade) ব্যবহার করা হয়েছে ***
+            candles = await self.client.get_candles(par=asset, timeframe=timeframe, quantidade=candle_count, timestamp=int(time.time()))
+            
             if not candles or not isinstance(candles, list):
                 return None
 
@@ -86,25 +86,20 @@ class ApiSignalGenerator:
             confidence_score = 0
             direction = None
             
-            # রুল ১: RSI
             is_oversold = rsi < 30
             is_overbought = rsi > 70
-
-            # রুল ২: Bollinger Bands
             price_touches_lower = current_price <= lower_bb if lower_bb else False
             price_touches_upper = current_price >= upper_bb if upper_bb else False
-            
-            # রুল ৩: EMA Crossover
             ema_cross_up = ema5 > ema20
             ema_cross_down = ema5 < ema20
 
             # সিগন্যাল সিদ্ধান্ত
             if is_oversold and price_touches_lower and ema_cross_up:
-                direction = "Buy" # CALL
-                confidence_score = (100 - rsi) * 1.5 # উদাহরণস্বরূপ গণনা
+                direction = "Buy"
+                confidence_score = (100 - rsi) * 1.5
             elif is_overbought and price_touches_upper and ema_cross_down:
-                direction = "Sell" # PUT
-                confidence_score = rsi * 1.5 # উদাহরণস্বরূপ গণনা
+                direction = "Sell"
+                confidence_score = rsi * 1.5
 
             if direction:
                 return {
@@ -115,8 +110,8 @@ class ApiSignalGenerator:
                 }
             return None
 
-        except Exception:
-            # সার্ভারলেস পরিবেশে ত্রুটি লগ করা গুরুত্বপূর্ণ
+        except Exception as e:
+            print(f"Error in analyze_asset for {asset}: {e}") # ডিবাগিং এর জন্য লগিং যোগ করা হয়েছে
             return None
 
 # ============================================================================
@@ -124,18 +119,13 @@ class ApiSignalGenerator:
 # ============================================================================
 @app.route('/api/index', methods=['GET'])
 def get_signals_api():
-    # Vercel-এর সার্ভারলেস ফাংশনের জন্য একটি নতুন অ্যাসিঙ্ক্রোনাস লুপ তৈরি করুন
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    # run_until_complete ব্যবহার করে অ্যাসিঙ্ক্রোনাস ফাংশন চালান
     signals = loop.run_until_complete(fetch_signals())
     loop.close()
-    
     return jsonify(signals)
 
 async def fetch_signals():
-    # --- এনভায়রনমেন্ট ভেরিয়েবল থেকে ক্রেডেনশিয়াল লোড করুন ---
     email = os.environ.get('QUOTEX_EMAIL')
     password = os.environ.get('QUOTEX_PASSWORD')
 
@@ -144,35 +134,29 @@ async def fetch_signals():
 
     client = Quotex(email=email, password=password)
     try:
-        # --- ক্লায়েন্টের সাথে সংযোগ স্থাপন ---
         check, reason = await client.connect()
         if not check:
             await client.close()
             return [{"error": f"Connection failed: {reason}"}]
 
-        # --- ডেমো ব্যালেন্সে পরিবর্তন (নিরাপত্তার জন্য) ---
         try:
             await client.change_balance('PRACTICE')
-        except: # পুরোনো ক্লায়েন্টে এই মেথড নাও থাকতে পারে
+        except: 
             pass
 
-        # --- অ্যাসেট বা ইন্সট্রুমেন্ট তালিকা আনুন ---
-        # আমরা শুধুমাত্র কয়েকটি জনপ্রিয় অ্যাসেট দিয়ে শুরু করছি, কারণ সবগুলো একসাথে আনা সময়সাপেক্ষ হতে পারে
         assets_to_scan = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD_otc", "EURUSD_otc"]
-        
         gen = ApiSignalGenerator(client)
         
-        # --- অ্যাসেটগুলো সমান্তরালভাবে বিশ্লেষণ করুন ---
         tasks = [gen.analyze_asset(asset) for asset in assets_to_scan]
         results = await asyncio.gather(*tasks)
         
-        # --- সফল সিগন্যালগুলো ফিল্টার করুন ---
         strong_signals = [res for res in results if res and res['confidence'] > 50]
         
         await client.close()
         return sorted(strong_signals, key=lambda x: x['confidence'], reverse=True)
 
     except Exception as e:
-        await client.close()
-        return [{"error": f"An unexpected error occurred: {str(e)}"}]
-
+        # ক্লায়েন্ট ইতিমধ্যে বন্ধ না হলে বন্ধ করুন
+        if client and client.check_connect():
+            await client.close()
+        return [{"error": f"An unexpected error occurred in fetch_signals: {str(e)}"}]
