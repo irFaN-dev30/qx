@@ -18,7 +18,7 @@
   "routes": [
     {
       "src": "/api/(.*)",
-      "dest": "/functions/signal_function/main.py"
+      "dest": "/api/signal.py"
     },
     {
       "src": "/(.*)",
