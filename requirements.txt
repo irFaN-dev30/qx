@@ -1,7 +1,58 @@
+# Trading Signal Terminal - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# ============================================
+# Core API & Web Framework
+# ============================================
+Flask==3.0.3
+Flask-Cors==4.0.1
+python-dotenv==1.0.1
+
+# ============================================
+# Technical Analysis & Data Processing
+# ============================================
 numpy>=1.25.0
+pandas>=2.0.0
+scipy>=1.11.0
+
+# ============================================
+# Async & WebSocket
+# ============================================
+aiohttp==3.9.5
+websockets>=12.0
+asyncio-contextmanager>=1.0.0
+
+# ============================================
+# Browser Automation (for Quotex login)
+# ============================================
+playwright==1.44.0
+cloudscraper>=1.2.71
+
+# ============================================
+# Logging & Monitoring
+# ============================================
+loguru>=0.7.0
 rich>=13.0.0
-# If quotexapi is available via pip, add it here; otherwise install it from your local copy or repo.
-# Example (uncomment if available):
-# quotexapi>=0.1.0
-# Optional dev/test tools
+
+# ============================================
+# Security & Environment
+# ============================================
+PyJWT>=2.8.0
+cryptography>=41.0.0
+
+# ============================================
+# Development & Testing
+# ============================================
 pytest>=7.0.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0
+
+# ============================================
+# Optional: For Cloud Deployment
+# ============================================
+firebase-admin==6.5.0
+firebase-functions==0.3.0
+gunicorn==21.2.0
+
