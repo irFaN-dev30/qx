@@ -5,6 +5,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
+import traceback
 
 import numpy as np
 from flask import Flask, jsonify
@@ -12,12 +13,16 @@ from flask import Flask, jsonify
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "API-Quotex-main"))
 
+# import error reporting
+IMPORT_EXCEPTION = None
+
 try:
     from api_quotex import AsyncQuotexClient
     from api_quotex.login import get_ssid
-except ImportError as e:
+except Exception as e:
     AsyncQuotexClient = None
     get_ssid = None
+    IMPORT_EXCEPTION = traceback.format_exc()
 
 app = Flask(__name__)
 
@@ -166,33 +171,64 @@ async def generate_signals():
             'timestamp': datetime.utcnow().isoformat() + 'Z'
         }
 
-    if AsyncQuotexClient is None or get_ssid is None:
+    ssid_from_env = os.environ.get('QUOTEX_SSID', '').strip()
+
+    if AsyncQuotexClient is None:
         return {
-            'error': 'Quotex API client libraries not available',
+            'error': 'Quotex API client library (AsyncQuotexClient) is not available',
             'status': 'import_error',
+            'details': IMPORT_EXCEPTION,
             'timestamp': datetime.utcnow().isoformat() + 'Z'
         }
 
-    try:
-        # Get SSID
-        ok, session_data = await get_ssid(email=email, password=password, is_demo=True)
-        if not ok or not session_data:
+    ssid = None
+    if ssid_from_env:
+        ssid = ssid_from_env
+
+    if not ssid:
+        if get_ssid is None:
             return {
-                'error': 'Failed to authenticate with Quotex (invalid credentials?)',
+                'error': 'QUOTEX_SSID not found and get_ssid login helper is unavailable in this environment',
                 'status': 'auth_error',
                 'timestamp': datetime.utcnow().isoformat() + 'Z'
             }
 
-        ssid = session_data.get('ssid', '')
-        if not ssid:
+        try:
+            # Get SSID via Playwright helper (note: may not work in Vercel serverless)
+            ok, session_data = await get_ssid(email=email, password=password, is_demo=True)
+            if not ok or not session_data:
+                return {
+                    'error': 'Failed to authenticate with Quotex (invalid credentials?)',
+                    'status': 'auth_error',
+                    'timestamp': datetime.utcnow().isoformat() + 'Z'
+                }
+
+            ssid = session_data.get('ssid', '')
+            if not ssid:
+                return {
+                    'error': 'No SSID in session_data after login',
+                    'status': 'auth_error',
+                    'timestamp': datetime.utcnow().isoformat() + 'Z'
+                }
+
+        except Exception as e:
             return {
-                'error': 'No SSID in session data',
+                'error': 'Error while calling get_ssid. Playwright might not be available in serverless',
                 'status': 'auth_error',
+                'details': str(e),
+                'trace': traceback.format_exc(),
                 'timestamp': datetime.utcnow().isoformat() + 'Z'
             }
 
-        # Connect client
-        client = AsyncQuotexClient(ssid=ssid, is_demo=True, persistent_connection=False, auto_reconnect=False)
+    if not ssid:
+        return {
+            'error': 'SSID could not be obtained from environment or login flow',
+            'status': 'auth_error',
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+
+    # Connect client
+    client = AsyncQuotexClient(ssid=ssid, is_demo=True, persistent_connection=False, auto_reconnect=False)
         connected = await client.connect()
 
         if not connected:
@@ -201,18 +237,9 @@ async def generate_signals():
             except Exception:
                 pass
             return {
-                'error': 'Could not connect to Quotex server',
+                'error': 'Could not connect to Quotex server - check SSID/credentials and network',
                 'status': 'connection_error',
-                'timestamp': datetime.utcnow().isoformat() + 'Z'
-            }
-
-        # Switch to demo
-        try:
-            await client.change_balance('PRACTICE')
-        except Exception:
-            pass
-
-        # Scan assets
+                'ssid': ssid[:50] + '...' if ssid else None,
         assets = os.getenv('SIGNAL_ASSETS', 'EURUSD,GBPUSD,USDJPY,AUDUSD').split(',')
         results = []
         for asset in assets:
