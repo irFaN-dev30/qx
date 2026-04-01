@@ -181,39 +181,36 @@ async def generate_signals():
             'timestamp': datetime.utcnow().isoformat() + 'Z'
         }
 
-    ssid = None
-    if ssid_from_env:
-        ssid = ssid_from_env
+    ssid = ssid_from_env or None
 
     if not ssid:
         if get_ssid is None:
             return {
-                'error': 'QUOTEX_SSID not found and get_ssid login helper is unavailable in this environment',
+                'error': 'QUOTEX_SSID not found and get_ssid login helper is unavailable',
                 'status': 'auth_error',
                 'timestamp': datetime.utcnow().isoformat() + 'Z'
             }
 
         try:
-            # Get SSID via Playwright helper (note: may not work in Vercel serverless)
             ok, session_data = await get_ssid(email=email, password=password, is_demo=True)
             if not ok or not session_data:
                 return {
-                    'error': 'Failed to authenticate with Quotex (invalid credentials?)',
+                    'error': 'Failed verifying Quotex credentials via get_ssid',
                     'status': 'auth_error',
                     'timestamp': datetime.utcnow().isoformat() + 'Z'
                 }
 
-            ssid = session_data.get('ssid', '')
+            ssid = session_data.get('ssid')
             if not ssid:
                 return {
-                    'error': 'No SSID in session_data after login',
+                    'error': 'No SSID returned from get_ssid',
                     'status': 'auth_error',
                     'timestamp': datetime.utcnow().isoformat() + 'Z'
                 }
 
         except Exception as e:
             return {
-                'error': 'Error while calling get_ssid. Playwright might not be available in serverless',
+                'error': 'get_ssid error (Playwright may be unavailable in this environment)',
                 'status': 'auth_error',
                 'details': str(e),
                 'trace': traceback.format_exc(),
@@ -222,37 +219,35 @@ async def generate_signals():
 
     if not ssid:
         return {
-            'error': 'SSID could not be obtained from environment or login flow',
+            'error': 'SSID could not be obtained',
             'status': 'auth_error',
             'timestamp': datetime.utcnow().isoformat() + 'Z'
         }
 
-    # Connect client
     client = AsyncQuotexClient(ssid=ssid, is_demo=True, persistent_connection=False, auto_reconnect=False)
 
     try:
         connected = await client.connect()
-
         if not connected:
             return {
-                'error': 'Could not connect to Quotex server - check SSID/credentials and network',
+                'error': 'Could not connect to Quotex server',
                 'status': 'connection_error',
                 'ssid': (ssid[:50] + '...') if ssid else None,
                 'timestamp': datetime.utcnow().isoformat() + 'Z'
             }
 
         assets = os.getenv('SIGNAL_ASSETS', 'EURUSD,GBPUSD,USDJPY,AUDUSD').split(',')
-        results = []
+        signals = []
+
         for asset in assets:
             try:
                 signal = await analyze_asset(client, asset.strip(), timeframe=60, count=100)
                 if signal and isinstance(signal, dict) and 'direction' in signal:
-                    results.append(signal)
+                    signals.append(signal)
             except Exception as e:
                 print(f"Asset {asset} error: {e}")
-                continue
 
-        if not results:
+        if not signals:
             return {
                 'signal': 'SCANNING',
                 'status': 'no_signals',
@@ -260,10 +255,10 @@ async def generate_signals():
                 'timestamp': datetime.utcnow().isoformat() + 'Z'
             }
 
-        results = sorted(results, key=lambda r: r.get('confidence', 0), reverse=True)
+        signals = sorted(signals, key=lambda r: r.get('confidence', 0), reverse=True)
         return {
-            'active_signal': results[0],
-            'all_signals': results,
+            'active_signal': signals[0],
+            'all_signals': signals,
             'status': 'ok',
             'timestamp': datetime.utcnow().isoformat() + 'Z'
         }
@@ -281,23 +276,6 @@ async def generate_signals():
             await client.disconnect()
         except Exception:
             pass
-                'timestamp': datetime.utcnow().isoformat() + 'Z'
-            }
-
-        results = sorted(results, key=lambda r: r.get('confidence', 0), reverse=True)
-        return {
-            'active_signal': results[0],
-            'all_signals': results,
-            'status': 'ok',
-            'timestamp': datetime.utcnow().isoformat() + 'Z'
-        }
-
-    except Exception as e:
-        return {
-            'error': f'Unexpected error: {str(e)}',
-            'status': 'error',
-            'timestamp': datetime.utcnow().isoformat() + 'Z'
-        }
 
 
 @app.route('/api/signal', methods=['GET', 'POST'])
@@ -318,3 +296,31 @@ def signal_handler():
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({'message': 'Trading Signal API v1.0 - Use /api/signal'})
+
+
+def _make_json_response(data):
+    status = 200 if data.get('status') == 'ok' or data.get('signal') else 500
+    return {
+        'statusCode': status,
+        'headers': {'content-type': 'application/json'},
+        'body': json.dumps(data)
+    }
+
+
+def handler(request, context=None):
+    """Vercel Python runtime entrypoint (fallback in case Flask isn't available)."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        data = loop.run_until_complete(generate_signals())
+        return _make_json_response(data)
+    except Exception as e:
+        error_data = {
+            'error': f'Internal server error in handler: {str(e)}',
+            'status': 'internal_error',
+            'details': traceback.format_exc(),
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+        return _make_json_response(error_data)
+    finally:
+        loop.close()
