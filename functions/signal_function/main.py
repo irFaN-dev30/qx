@@ -229,17 +229,18 @@ async def generate_signals():
 
     # Connect client
     client = AsyncQuotexClient(ssid=ssid, is_demo=True, persistent_connection=False, auto_reconnect=False)
+
+    try:
         connected = await client.connect()
 
         if not connected:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
             return {
                 'error': 'Could not connect to Quotex server - check SSID/credentials and network',
                 'status': 'connection_error',
-                'ssid': ssid[:50] + '...' if ssid else None,
+                'ssid': (ssid[:50] + '...') if ssid else None,
+                'timestamp': datetime.utcnow().isoformat() + 'Z'
+            }
+
         assets = os.getenv('SIGNAL_ASSETS', 'EURUSD,GBPUSD,USDJPY,AUDUSD').split(',')
         results = []
         for asset in assets:
@@ -251,13 +252,35 @@ async def generate_signals():
                 print(f"Asset {asset} error: {e}")
                 continue
 
-        await client.disconnect()
-
         if not results:
             return {
                 'signal': 'SCANNING',
                 'status': 'no_signals',
                 'all_signals': [],
+                'timestamp': datetime.utcnow().isoformat() + 'Z'
+            }
+
+        results = sorted(results, key=lambda r: r.get('confidence', 0), reverse=True)
+        return {
+            'active_signal': results[0],
+            'all_signals': results,
+            'status': 'ok',
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+
+    except Exception as e:
+        return {
+            'error': f'Unexpected error: {str(e)}',
+            'status': 'error',
+            'details': traceback.format_exc(),
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
                 'timestamp': datetime.utcnow().isoformat() + 'Z'
             }
 
