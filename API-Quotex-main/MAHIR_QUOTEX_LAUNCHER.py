@@ -73,7 +73,7 @@ class MahirQuotexLauncher:
         console.print(banner)
         
     def load_credentials(self) -> bool:
-        """Load credentials from config files"""
+        """Load credentials from config files or fallback to hardcoded values"""
         try:
             # Try config.json first
             if self.config_path.exists():
@@ -81,8 +81,9 @@ class MahirQuotexLauncher:
                     config = json.load(f)
                     self.email = config.get('email')
                     self.password = config.get('password')
-                    console.print(f"[{NEON_GREEN}]✓[/] Loaded credentials from config.json")
-                    return True
+                    if self.email and self.password:
+                        console.print(f"[{NEON_GREEN}]✓[/] Loaded credentials from config.json")
+                        return True
             
             # Try sessions/config.json
             sessions_config = self.sessions_dir / "config.json"
@@ -91,27 +92,41 @@ class MahirQuotexLauncher:
                     config = json.load(f)
                     self.email = config.get('email')
                     self.password = config.get('password')
-                    console.print(f"[{NEON_GREEN}]✓[/] Loaded credentials from sessions/config.json")
-                    return True
+                    if self.email and self.password:
+                        console.print(f"[{NEON_GREEN}]✓[/] Loaded credentials from sessions/config.json")
+                        return True
             
             # Try environment variables
-            from dotenv import load_dotenv
-            env_path = self.base_dir / ".env"
-            if env_path.exists():
-                load_dotenv(env_path)
-                self.email = os.getenv('QUOTEX_EMAIL')
-                self.password = os.getenv('QUOTEX_PASSWORD')
-                if self.email and self.password:
-                    console.print(f"[{NEON_GREEN}]✓[/] Loaded credentials from .env")
-                    return True
-            
+            try:
+                from dotenv import load_dotenv
+                env_path = self.base_dir / ".env"
+                if env_path.exists():
+                    load_dotenv(env_path)
+                    self.email = os.getenv('QUOTEX_EMAIL')
+                    self.password = os.getenv('QUOTEX_PASSWORD')
+                    if self.email and self.password:
+                        console.print(f"[{NEON_GREEN}]✓[/] Loaded credentials from .env")
+                        return True
+            except ImportError:
+                pass # dotenv not installed, skipping
+
+            # Fallback to hardcoded credentials if no file or env var found
+            console.print(f"[{NEON_YELLOW}]⚠[/] No config file found. Using hardcoded credentials.")
+            self.email = "abcd34563489@gmail.com"
+            self.password = "{TtT<Tisha343433}"
+            if self.email and self.password:
+                return True
+
             console.print(f"[{NEON_RED}]✗[/] No credentials found!")
             return False
             
         except Exception as e:
             console.print(f"[{NEON_RED}]✗[/] Error loading credentials: {e}")
-            return False
-    
+            # Fallback in case of error
+            self.email = "abcd34563489@gmail.com"
+            self.password = "{TtT<Tisha343433}"
+            return True
+
     def check_session(self) -> bool:
         """Check if valid session exists"""
         try:
@@ -227,7 +242,7 @@ class MahirQuotexLauncher:
         return choice.strip()
     
     async def run(self):
-        """Main launcher flow"""
+        """Main launcher flow - Modified for Auto-Mode Testing"""
         self.print_banner()
         
         # Load credentials
@@ -239,49 +254,23 @@ class MahirQuotexLauncher:
         console.print(f"[{NEON_GREEN}]✓[/] Email: {self.email}")
         
         # Check for existing session
-        has_session = self.check_session()
+        self.check_session()
+
+        # --- AUTO-MODE TEST: Running Full Setup Automatically ---
+        console.print(f"\n[{NEON_BLUE}]→[/] [bold]AUTO MODE:[/bold] Starting full setup process to test credentials...\n")
         
-        while True:
-            choice = self.show_menu()
-            
-            if choice == "1":
-                await self.run_login()
-                
-            elif choice == "2":
-                if not has_session and not self.check_session():
-                    console.print(f"[{NEON_RED}]✗[/] No session found! Please login first (Option 1)")
-                else:
-                    await self.run_test()
-                    
-            elif choice == "3":
-                if not has_session and not self.check_session():
-                    console.print(f"[{NEON_RED}]✗[/] No session found! Please login first (Option 1)")
-                else:
-                    await self.run_signal_generator()
-                    
-            elif choice == "4":
-                # Full setup
-                console.print(f"\n[{NEON_BLUE}]→[/] Starting full setup process...\n")
-                
-                # Step 1: Login
-                if await self.run_login():
-                    # Step 2: Test
-                    await asyncio.sleep(2)
-                    if await self.run_test():
-                        # Step 3: Run signals
-                        await asyncio.sleep(2)
-                        await self.run_signal_generator()
-                        
-            elif choice == "5":
-                console.print(f"\n[bold {NEON_PURPLE}]╔══════════════════════════════════════════════════════════════════╗[/]")
-                console.print(f"[bold {NEON_PURPLE}]║[/]                                                                  [bold {NEON_PURPLE}]║[/]")
-                console.print(f"[bold {NEON_PURPLE}]║[/]        [bold {NEON_GREEN}]✨ MAHIR QUOTEX SYSTEM SHUTDOWN COMPLETE ✨[/]           [bold {NEON_PURPLE}]║[/]")
-                console.print(f"[bold {NEON_PURPLE}]║[/]                                                                  [bold {NEON_PURPLE}]║[/]")
-                console.print(f"[bold {NEON_PURPLE}]╚══════════════════════════════════════════════════════════════════╝[/]\n")
-                break
-                
-            else:
-                console.print(f"[{NEON_RED}]✗[/] Invalid choice! Please select 1-5")
+        # Step 1: Login
+        if await self.run_login():
+            # Step 2: Test Connection
+            console.print(f"\n[{NEON_BLUE}]→[/] Login successful. Proceeding to connection test...\n")
+            await asyncio.sleep(2)
+            if await self.run_test():
+                # Step 3: Run Signal Generator
+                console.print(f"\n[{NEON_BLUE}]→[/] Connection test successful. Starting signal generator...\n")
+                await asyncio.sleep(2)
+                await self.run_signal_generator()
+        
+        console.print(f"\n[bold {NEON_PURPLE}]✨ AUTO MODE TEST COMPLETE ✨[/]")
 
 if __name__ == "__main__":
     try:

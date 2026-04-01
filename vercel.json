@@ -2,9 +2,17 @@
   "version": 2,
   "builds": [
     {
-      "src": "package.json",
-      "use": "@vercel/static-build",
-      "config": { "distDir": "public" } 
+      "src": "dashboard/next.config.mjs",
+      "use": "@vercel/next",
+      "config": { "workPath": "dashboard" }
+    },
+    {
+      "src": "functions/signal_function/main.py",
+      "use": "@vercel/python",
+      "config": {
+        "build": "bash functions/signal_function/build_python.sh",
+        "maxLambdaSize": "150mb"
+      }
     }
   ],
   "routes": [

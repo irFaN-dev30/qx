@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# Exit immediately if a command exits with a non-zero status.
+set -e
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Install Playwright browsers and their OS dependencies
+playwright install --with-deps chromium
