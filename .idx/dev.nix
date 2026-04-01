@@ -1,55 +1,61 @@
-# To learn more about how to use Nix to configure your environment
-# see: https://firebase.google.com/docs/studio/customize-workspace
+# ===================================================================
+# Final and Corrected .idx/dev.nix for Project QX
+# Author: Gemini (with apologies for previous errors)
+# This version uses a simplified, standard, and robust structure.
+# ===================================================================
 { pkgs, ... }: {
-  # Which nixpkgs channel to use.
-  channel = "stable-24.05"; # or "unstable"
+  # Use a stable Nix channel
+  channel = "stable-24.05";
 
-  # Use https://search.nixos.org/packages to find packages
+  # Define the necessary system packages.
+  # Nix lists are space-separated. No commas.
   packages = [
-    # pkgs.go
-    # pkgs.python311
-    # pkgs.python311Packages.pip
-    # pkgs.nodejs_20
-    # pkgs.nodePackages.nodemon
+    pkgs.python311
+    pkgs.nodejs_20
+    pkgs.python311Packages.pip
+    pkgs.python311Packages.playwright
+    pkgs.git
   ];
 
-  # Sets environment variables in the workspace
-  env = {};
+  # IDX specific configurations
   idx = {
-    # Search for the extensions you want on https://open-vsx.org/ and use "publisher.id"
+    # Recommended extensions for your project
     extensions = [
-      # "vscodevim.vim"
+      "ms-python.python"
+      "esbenp.prettier-vscode"
     ];
 
-    # Enable previews
+    # Workspace lifecycle hooks for automation
+    workspace = {
+      # Commands that run ONCE when the workspace is first created.
+      # Each command is a separate, simple attribute for reliability.
+      onCreate = {
+        install-npm-deps = "cd dashboard && npm install";
+        install-pip-deps = "pip install -r functions/signal_function/requirements.txt";
+        install-playwright-browsers = "playwright install --with-deps";
+      };
+
+      # Commands that run EVERY time the workspace starts.
+      onStart = {
+        check-playwright = "playwright install --with-deps";
+      };
+    };
+
+    # Configuration for the web preview panel.
     previews = {
       enable = true;
       previews = {
-        # web = {
-        #   # Example: run "npm run dev" with PORT set to IDX's defined port for previews,
-        #   # and show it in IDX's web preview panel
-        #   command = ["npm" "run" "dev"];
-        #   manager = "web";
-        #   env = {
-        #     # Environment variables to set for your server
-        #     PORT = "$PORT";
-        #   };
-        # };
-      };
-    };
-
-    # Workspace lifecycle hooks
-    workspace = {
-      # Runs when a workspace is first created
-      onCreate = {
-        # Example: install JS dependencies from NPM
-        # npm-install = "npm install";
-      };
-      # Runs when the workspace is (re)started
-      onStart = {
-        # Example: start a background task to watch and re-build backend code
-        # watch-backend = "npm run watch-backend";
+        web = {
+          # Command to start the Next.js development server.
+          command = [ "npm" "run" "dev" ];
+          # Run this command inside the 'dashboard' directory.
+          cwd = "dashboard";
+          manager = "web";
+        };
       };
     };
   };
+
+  # Environment variables can be set here.
+  env = {};
 }
