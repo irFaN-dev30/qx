@@ -1,128 +1,270 @@
-# -*- coding: utf-8 -*-
-# --- Path setup for local API-Quotex library ---
-import sys
+"""Vercel serverless function for trading signal generation"""
 import os
-
-current_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(os.path.dirname(current_dir))
-api_quotex_path = os.path.join(root_dir, 'API-Quotex-main')
-if api_quotex_path not in sys.path:
-    sys.path.append(api_quotex_path)
-# --- End of Path Setup ---
-
-# --- Main Application Imports ---
+import sys
 import asyncio
-from flask import Flask, jsonify
-from flask_cors import CORS
-from firebase_admin import credentials, firestore, initialize_app
-from api_quotex.client import AsyncQuotexClient
-from api_quotex.utils import get_ssid
-from api_quotex.constants import OrderDirection, ASSET_LIST
+import json
+from datetime import datetime
+from pathlib import Path
 
-# --- Initializations ---
-app = Flask(__name__)
-CORS(app)
+import numpy as np
+from flask import Flask, jsonify
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT / "API-Quotex-main"))
 
 try:
-    cred = credentials.ApplicationDefault()
-    initialize_app(cred)
-    db = firestore.client()
-    print("Firebase App initialized successfully.")
-except Exception as e:
-    print(f"Firebase initialization failed: {e}")
-    db = None
+    from api_quotex import AsyncQuotexClient
+    from api_quotex.login import get_ssid
+except ImportError as e:
+    AsyncQuotexClient = None
+    get_ssid = None
 
-# --- Global State ---
-quotex_client = None
-ssid = None
+app = Flask(__name__)
 
-# --- Core Trading Logic ---
-async def get_or_create_quotex_client():
-    global quotex_client, ssid
-    if quotex_client and quotex_client.is_connected:
-        return quotex_client
 
-    email = os.getenv("QUOTEX_EMAIL")
-    password = os.getenv("QUOTEX_PASSWORD")
-    if not email or not password:
-        print("Error: QUOTEX_EMAIL and QUOTEX_PASSWORD env vars not set.")
-        return None
+class TechnicalAnalysis:
+    @staticmethod
+    def calculate_rsi(prices, period=14):
+        prices = np.asarray(prices, dtype=float)
+        if prices.size < period + 1:
+            return 50.0
+        deltas = np.diff(prices)
+        gains = np.where(deltas > 0, deltas, 0.0)
+        losses = np.where(deltas < 0, -deltas, 0.0)
+        avg_gain = np.mean(gains[:period])
+        avg_loss = np.mean(losses[:period])
+        for i in range(period, len(gains)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return float(100.0 - (100.0 / (1.0 + rs)))
 
-    try:
-        print("Attempting to get SSID via Playwright...")
-        ssid_info = get_ssid(email=email, password=password)
-        ssid = ssid_info.get("demo")
-        if not ssid:
-            print("Failed to retrieve SSID.")
+    @staticmethod
+    def calculate_ema(prices, period=20):
+        prices = list(prices)
+        if not prices:
+            return 0.0
+        if len(prices) < period:
+            return float(np.mean(prices))
+        sma = float(np.mean(prices[:period]))
+        mult = 2.0 / (period + 1.0)
+        ema = sma
+        for p in prices[period:]:
+            ema = (p - ema) * mult + ema
+        return float(ema)
+
+    @staticmethod
+    def calculate_bollinger_bands(prices, period=20, std_dev=2):
+        prices = np.asarray(prices, dtype=float)
+        if prices.size < period:
+            return None, None, None
+        window = prices[-period:]
+        sma = float(np.mean(window))
+        sd = float(np.std(window, ddof=0))
+        return float(sma + std_dev * sd), float(sma), float(sma - std_dev * sd)
+
+
+class SignalEngine:
+    def __init__(self):
+        self.ta = TechnicalAnalysis()
+
+    def score_and_classify(self, prices, asset="UNKNOWN"):
+        if not prices or len(prices) < 20:
             return None
-        print("SSID retrieved successfully.")
 
-        client = AsyncQuotexClient(ssid=ssid, is_demo=True)
-        if await client.connect():
-            print("Quotex client connected successfully.")
-            quotex_client = client
-            return client
+        rsi = self.ta.calculate_rsi(prices, period=14)
+        upper_bb, middle_bb, lower_bb = self.ta.calculate_bollinger_bands(prices, period=20, std_dev=2)
+        ema5 = self.ta.calculate_ema(prices, period=5)
+        ema20 = self.ta.calculate_ema(prices, period=20)
+        price = float(prices[-1])
+
+        conditions = {
+            'rsi_buy': rsi < 30,
+            'rsi_sell': rsi > 70,
+            'bollinger_buy': lower_bb is not None and price < lower_bb,
+            'bollinger_sell': upper_bb is not None and price > upper_bb,
+            'ema_buy': ema5 > ema20,
+            'ema_sell': ema5 < ema20,
+        }
+
+        buy_ok = conditions['rsi_buy'] and conditions['bollinger_buy'] and conditions['ema_buy']
+        sell_ok = conditions['rsi_sell'] and conditions['bollinger_sell'] and conditions['ema_sell']
+
+        if not buy_ok and not sell_ok:
+            return None
+
+        direction = 'BUY' if buy_ok else 'SELL'
+        match_count = (
+            int(conditions['rsi_buy'] if direction == 'BUY' else conditions['rsi_sell']) +
+            int(conditions['bollinger_buy'] if direction == 'BUY' else conditions['bollinger_sell']) +
+            int(conditions['ema_buy'] if direction == 'BUY' else conditions['ema_sell'])
+        )
+
+        confidence = int(min(100, (match_count / 3) * 100))
+        if direction == 'BUY':
+            confidence = int(min(100, confidence + max(0, 35 - rsi)))
         else:
-            print("Failed to connect Quotex client.")
+            confidence = int(min(100, confidence + max(0, rsi - 65)))
+
+        return {
+            'asset': asset,
+            'direction': direction,
+            'confidence': confidence,
+            'rsi': round(rsi, 2),
+            'ema5': round(ema5, 5),
+            'ema20': round(ema20, 5),
+            'upper_bb': round(upper_bb, 5) if upper_bb else None,
+            'middle_bb': round(middle_bb, 5) if middle_bb else None,
+            'lower_bb': round(lower_bb, 5) if lower_bb else None,
+            'price': round(price, 5),
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'conditions': conditions,
+        }
+
+
+async def analyze_asset(client, asset, timeframe=60, count=100):
+    """Fetch candles and analyze asset"""
+    try:
+        if hasattr(client, 'get_candles'):
+            candles = await client.get_candles(asset, timeframe, count)
+        else:
             return None
+
+        if not candles or not isinstance(candles, (list, tuple)):
+            return None
+
+        close_prices = []
+        for c in candles[-count:]:
+            if hasattr(c, 'close'):
+                close_prices.append(float(c.close))
+            elif isinstance(c, dict):
+                close_prices.append(float(c.get('close') or c.get('price') or 0))
+            else:
+                close_prices.append(float(c))
+
+        if not close_prices:
+            return None
+
+        return SignalEngine().score_and_classify(close_prices, asset)
+
     except Exception as e:
-        print(f"An error occurred during client initialization: {e}")
+        print(f"Error analyzing {asset}: {str(e)}")
         return None
 
-async def analyze_asset(asset_name):
-    client = await get_or_create_quotex_client()
-    if not client:
-        return None
+
+async def generate_signals():
+    """Main signal generation logic"""
+    email = os.environ.get('QUOTEX_EMAIL')
+    password = os.environ.get('QUOTEX_PASSWORD')
+
+    if not email or not password:
+        return {
+            'error': 'Missing QUOTEX_EMAIL or QUOTEX_PASSWORD environment variables',
+            'status': 'config_error',
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+
+    if AsyncQuotexClient is None or get_ssid is None:
+        return {
+            'error': 'Quotex API client libraries not available',
+            'status': 'import_error',
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
 
     try:
-        await client.subscribe_candles(asset=asset_name, timeframe=60)
-        async for candle in client.iter_candles(asset_name, 60):
-            print(f"New candle for {asset_name}: O:{candle.open} C:{candle.close}")
-            await client.unsubscribe_candles(asset=asset_name, timeframe=60)
-            
-            signal_type = "BUY" if candle.close > candle.open else "SELL"
-            return {"asset": asset_name, "signal": signal_type, "confidence": 0.75}
-            
+        # Get SSID
+        ok, session_data = await get_ssid(email=email, password=password, is_demo=True)
+        if not ok or not session_data:
+            return {
+                'error': 'Failed to authenticate with Quotex (invalid credentials?)',
+                'status': 'auth_error',
+                'timestamp': datetime.utcnow().isoformat() + 'Z'
+            }
+
+        ssid = session_data.get('ssid', '')
+        if not ssid:
+            return {
+                'error': 'No SSID in session data',
+                'status': 'auth_error',
+                'timestamp': datetime.utcnow().isoformat() + 'Z'
+            }
+
+        # Connect client
+        client = AsyncQuotexClient(ssid=ssid, is_demo=True, persistent_connection=False, auto_reconnect=False)
+        connected = await client.connect()
+
+        if not connected:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            return {
+                'error': 'Could not connect to Quotex server',
+                'status': 'connection_error',
+                'timestamp': datetime.utcnow().isoformat() + 'Z'
+            }
+
+        # Switch to demo
+        try:
+            await client.change_balance('PRACTICE')
+        except Exception:
+            pass
+
+        # Scan assets
+        assets = os.getenv('SIGNAL_ASSETS', 'EURUSD,GBPUSD,USDJPY,AUDUSD').split(',')
+        results = []
+        for asset in assets:
+            try:
+                signal = await analyze_asset(client, asset.strip(), timeframe=60, count=100)
+                if signal and isinstance(signal, dict) and 'direction' in signal:
+                    results.append(signal)
+            except Exception as e:
+                print(f"Asset {asset} error: {e}")
+                continue
+
+        await client.disconnect()
+
+        if not results:
+            return {
+                'signal': 'SCANNING',
+                'status': 'no_signals',
+                'all_signals': [],
+                'timestamp': datetime.utcnow().isoformat() + 'Z'
+            }
+
+        results = sorted(results, key=lambda r: r.get('confidence', 0), reverse=True)
+        return {
+            'active_signal': results[0],
+            'all_signals': results,
+            'status': 'ok',
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+
     except Exception as e:
-        print(f"Error analyzing asset {asset_name}: {e}")
-        return None
+        return {
+            'error': f'Unexpected error: {str(e)}',
+            'status': 'error',
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
 
-# --- API Endpoints ---
-@app.route("/generate-signal", methods=["GET"])
-def generate_signal_endpoint():
-    assets_to_check = ["EURUSD_otc", "AUDCAD_otc", "BTCUSD_otc"]
-    
-    async def run_analysis():
-        tasks = [analyze_asset(asset) for asset in assets_to_check]
-        results = await asyncio.gather(*tasks)
-        
-        signals = [s for s in results if s] # Filter out None results
-        
-        if db and signals:
-            for signal in signals:
-                try:
-                    db.collection('signals').add(signal)
-                    print(f"Signal for {signal['asset']} stored in Firestore.")
-                except Exception as e:
-                    print(f"Error storing signal in Firestore: {e}")
-        return signals
 
-    # Run the async analysis in a new event loop
+@app.route('/api/signal', methods=['GET', 'POST'])
+def signal_handler():
+    """HTTP handler for signal endpoint"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    generated_signals = loop.run_until_complete(run_analysis())
-    loop.close()
+    try:
+        data = loop.run_until_complete(generate_signals())
+        status = 200 if data.get('status') == 'ok' or data.get('signal') else 500
+        return jsonify(data), status
+    except Exception as e:
+        return jsonify({'error': str(e), 'status': 'internal_error'}), 500
+    finally:
+        loop.close()
 
-    if generated_signals:
-        return jsonify({"status": "success", "signals": generated_signals})
-    else:
-        return jsonify({"status": "failed", "message": "Could not generate signals."}), 500
 
-@app.route("/")
+@app.route('/', methods=['GET'])
 def index():
-    # This is the handler for the root path, which Vercel needs.
-    return "Welcome to the Quotex Signal Generation API."
-
-# The __name__ == '__main__' block is for local execution, not for Vercel.
-# if __name__ == "__main__":
-    app.run(debug=True, port=8080)
+    return jsonify({'message': 'Trading Signal API v1.0 - Use /api/signal'})
