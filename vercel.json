@@ -5,8 +5,8 @@
       "src": "functions/signal_function/main.py",
       "use": "@vercel/python",
       "config": {
-        "pip": "install -r functions/signal_function/requirements.txt",
-        "playwright": "install-deps"
+        "includeFiles": "API-Quotex-main/**",
+        "maxLambdaSize": "50mb"
       }
     },
     {
@@ -17,7 +17,7 @@
   ],
   "routes": [
     {
-      "src": "/api/signal",
+      "src": "/api/(.*)",
       "dest": "/functions/signal_function/main.py"
     },
     {

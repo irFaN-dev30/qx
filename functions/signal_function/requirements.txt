@@ -1,5 +1,11 @@
-flask
-flask-cors
-firebase-admin
-websockets
-playwright
+# This file lists the Python packages that your function depends on.
+# Vercel will automatically install these packages when deploying.
+
+Flask==3.0.3
+Flask-Cors==4.0.1
+firebase-admin==6.5.0
+
+# --- Dependencies for the locally included API-Quotex library ---
+playwright==1.44.0
+aiohttp==3.9.5
+python-dotenv==1.0.1

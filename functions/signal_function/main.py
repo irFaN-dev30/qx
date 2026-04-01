@@ -1,85 +1,128 @@
-
+# -*- coding: utf-8 -*-
+# --- Path setup for local API-Quotex library ---
 import sys
 import os
-import json
 
-# --- Master Fix: User-Provided Path Correction for Vercel ---
-# This block sets the correct library path to find the api_quotex module
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-api_path = os.path.join(parent_dir, 'git-quotex-api-v2', 'API-Quotex-main')
-sys.path.append(parent_dir)
-sys.path.append(api_path)
-# --- End Master Fix ---
+root_dir = os.path.dirname(os.path.dirname(current_dir))
+api_quotex_path = os.path.join(root_dir, 'API-Quotex-main')
+if api_quotex_path not in sys.path:
+    sys.path.append(api_quotex_path)
+# --- End of Path Setup ---
 
-# Now, import the necessary modules
+# --- Main Application Imports ---
+import asyncio
 from flask import Flask, jsonify
 from flask_cors import CORS
-import firebase_admin
-from firebase_admin import credentials, firestore
-from git_quotex_api_v2.improved_signal_generator_all_assets import get_all_signals
+from firebase_admin import credentials, firestore, initialize_app
+from api_quotex.client import AsyncQuotexClient
+from api_quotex.utils import get_ssid
+from api_quotex.constants import OrderDirection, ASSET_LIST
 
+# --- Initializations ---
 app = Flask(__name__)
 CORS(app)
 
-# --- Firebase & Credentials Handling ---
-# 1. Firebase Initialization with key format correction
 try:
-    # Securely get and format the Firebase private key
-    firebase_key_str = os.getenv('FIREBASE_PRIVATE_KEY')
-    if not firebase_key_str:
-        raise ValueError("FIREBASE_PRIVATE_KEY environment variable is not set.")
-    
-    # Replace escaped newlines for JSON parsing, as suggested by the user
-    firebase_key_dict = json.loads(firebase_key_str.replace('\\n', '\n'))
-    
-    cred = credentials.Certificate(firebase_key_dict)
-    
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
-        
+    cred = credentials.ApplicationDefault()
+    initialize_app(cred)
     db = firestore.client()
+    print("Firebase App initialized successfully.")
 except Exception as e:
-    print(f"CRITICAL: Firebase initialization failed: {e}")
+    print(f"Firebase initialization failed: {e}")
     db = None
 
-# 2. Get Quotex credentials from environment variables
-QUOTEX_EMAIL = os.getenv('QUOTEX_EMAIL')
-QUOTEX_PASSWORD = os.getenv('QUOTEX_PASSWORD')
-# --- End Credentials Handling ---
+# --- Global State ---
+quotex_client = None
+ssid = None
 
+# --- Core Trading Logic ---
+async def get_or_create_quotex_client():
+    global quotex_client, ssid
+    if quotex_client and quotex_client.is_connected:
+        return quotex_client
 
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>', methods=['GET'])
-def handler(path):
-    if db is None:
-        return jsonify({"status": "error", "message": "Server critical error: Firebase is not initialized."}), 500
-
-    if not QUOTEX_EMAIL or not QUOTEX_PASSWORD:
-        return jsonify({"status": "error", "message": "Server configuration error: Quotex credentials are not set."}), 500
+    email = os.getenv("QUOTEX_EMAIL")
+    password = os.getenv("QUOTEX_PASSWORD")
+    if not email or not password:
+        print("Error: QUOTEX_EMAIL and QUOTEX_PASSWORD env vars not set.")
+        return None
 
     try:
-        # The improved_signal_generator_all_assets script dynamically fetches assets
-        # So, no manual asset list is needed here.
-        signals = get_all_signals(email=QUOTEX_EMAIL, password=QUOTEX_PASSWORD)
-        
-        if not signals:
-            # Return success even if no signals are generated, prevents front-end error
-            return jsonify({"status": "success", "message": "Scan complete. No strong signals found at this time."}), 200
+        print("Attempting to get SSID via Playwright...")
+        ssid_info = get_ssid(email=email, password=password)
+        ssid = ssid_info.get("demo")
+        if not ssid:
+            print("Failed to retrieve SSID.")
+            return None
+        print("SSID retrieved successfully.")
 
-        # Store signals in Firestore using a batch write
-        batch = db.batch()
-        for signal in signals:
-            if signal and 'asset' in signal:
-                asset = signal.get('asset')
-                doc_ref = db.collection('signals').document(asset)
-                batch.set(doc_ref, signal)
-        batch.commit()
-
-        return jsonify({"status": "success", "signals_generated": len(signals)}), 200
-
+        client = AsyncQuotexClient(ssid=ssid, is_demo=True)
+        if await client.connect():
+            print("Quotex client connected successfully.")
+            quotex_client = client
+            return client
+        else:
+            print("Failed to connect Quotex client.")
+            return None
     except Exception as e:
-        # Catch any other error during signal generation and log it
-        error_message = f"An error occurred in the signal generation process: {str(e)}"
-        print(error_message)
-        return jsonify({"status": "error", "message": error_message}), 500
+        print(f"An error occurred during client initialization: {e}")
+        return None
+
+async def analyze_asset(asset_name):
+    client = await get_or_create_quotex_client()
+    if not client:
+        return None
+
+    try:
+        await client.subscribe_candles(asset=asset_name, timeframe=60)
+        async for candle in client.iter_candles(asset_name, 60):
+            print(f"New candle for {asset_name}: O:{candle.open} C:{candle.close}")
+            await client.unsubscribe_candles(asset=asset_name, timeframe=60)
+            
+            signal_type = "BUY" if candle.close > candle.open else "SELL"
+            return {"asset": asset_name, "signal": signal_type, "confidence": 0.75}
+            
+    except Exception as e:
+        print(f"Error analyzing asset {asset_name}: {e}")
+        return None
+
+# --- API Endpoints ---
+@app.route("/generate-signal", methods=["GET"])
+def generate_signal_endpoint():
+    assets_to_check = ["EURUSD_otc", "AUDCAD_otc", "BTCUSD_otc"]
+    
+    async def run_analysis():
+        tasks = [analyze_asset(asset) for asset in assets_to_check]
+        results = await asyncio.gather(*tasks)
+        
+        signals = [s for s in results if s] # Filter out None results
+        
+        if db and signals:
+            for signal in signals:
+                try:
+                    db.collection('signals').add(signal)
+                    print(f"Signal for {signal['asset']} stored in Firestore.")
+                except Exception as e:
+                    print(f"Error storing signal in Firestore: {e}")
+        return signals
+
+    # Run the async analysis in a new event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    generated_signals = loop.run_until_complete(run_analysis())
+    loop.close()
+
+    if generated_signals:
+        return jsonify({"status": "success", "signals": generated_signals})
+    else:
+        return jsonify({"status": "failed", "message": "Could not generate signals."}), 500
+
+@app.route("/")
+def index():
+    # This is the handler for the root path, which Vercel needs.
+    return "Welcome to the Quotex Signal Generation API."
+
+# The __name__ == '__main__' block is for local execution, not for Vercel.
+# if __name__ == "__main__":
+    app.run(debug=True, port=8080)
