@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
     {
-      "src": "functions/signal_function/main.py",
+      "src": "api/signal.py",
       "use": "@vercel/python",
       "config": {
         "includeFiles": "API-Quotex-main/**",
