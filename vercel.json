@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/signal.py",
+      "src": "functions/signal_function/main.py",
       "use": "@vercel/python"
     },
     {
@@ -14,14 +14,10 @@
   "routes": [
     {
       "src": "/api/signal",
-      "dest": "/api/signal.py"
+      "dest": "/functions/signal_function/main.py"
     },
     {
-      "src": "/api/(.*)",
-      "dest": "/api/index.py"
-    },
-    {
-      "src": "^/(.*)$",
+      "src": "/(.*)",
       "dest": "/dashboard/$1"
     }
   ]
