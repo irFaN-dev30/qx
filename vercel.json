@@ -14,15 +14,5 @@
         "maxLambdaSize": "150mb"
       }
     }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/functions/signal_function/main.py"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/dashboard/$1"
-    }
   ]
 }
